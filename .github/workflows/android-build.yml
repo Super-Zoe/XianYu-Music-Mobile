@@ -1,0 +1,86 @@
+name: Android APK Build
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+
+jobs:
+  build:
+    name: Build Flutter Android APK (arm64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        # Gradle 9.1.0 不支持 JDK 25，必须用 JDK 21（见 android/gradle.properties）
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android SDK + NDK (manual, deterministic path)
+        run: |
+          export ANDROID_HOME=$HOME/Android/Sdk
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+          curl -sSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/cmdtools.zip
+          unzip -q /tmp/cmdtools.zip -d "$ANDROID_HOME/cmdline-tools"
+          mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-37" \
+            "platforms;android-36" \
+            "build-tools;35.0.0" \
+            "ndk;27.1.12297006"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.1.12297006" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.1.12297006" >> "$GITHUB_ENV"
+
+      - name: Install libclang (Rust bindgen / rquickjs-sys)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev clang
+          LIBCLANG_PATH="$(dirname "$(find /usr -name 'libclang.so*' 2>/dev/null | head -1)")"
+          echo "LIBCLANG_PATH=$LIBCLANG_PATH" >> "$GITHUB_ENV"
+
+      - name: Setup Rust (with android target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47'
+          channel: stable
+          cache: true
+
+      - name: Use official Gradle distribution
+        # 原 wrapper 指向腾讯镜像，云端 runner 可能不可达；改为官方源确保可下载
+        run: |
+          sed -i 's#mirrors.cloud.tencent.com/gradle#services.gradle.org/distributions#' android/gradle/wrapper/gradle-wrapper.properties
+          grep distributionUrl android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build release APK (arm64, Rust 由 rustHook 自动编译)
+        run: flutter build apk --release
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xianyu-music-android
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
