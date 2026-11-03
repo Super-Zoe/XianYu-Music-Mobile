@@ -75,8 +75,29 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      - name: Build release APK (arm64, Rust 由 rustHook 自动编译)
+      - name: Build Rust core (.so, visible output)
+        # 显式编译并把 .so 拷到 jniLibs，避免 rustHook 把错误重定向到隐藏日志
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.1.12297006
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_HOME }}/ndk/27.1.12297006
+        run: |
+          export PATH="$CARGO_HOME/bin:$PATH"
+          cd rust
+          cargo ndk -t arm64-v8a build --release
+          mkdir -p ../android/app/src/main/jniLibs/arm64-v8a
+          cp -f target/aarch64-linux-android/release/libxianyu_core.so \
+                ../android/app/src/main/jniLibs/arm64-v8a/
+          echo "=== 产物校验 ==="
+          ls -lh ../android/app/src/main/jniLibs/arm64-v8a/libxianyu_core.so
+
+      - name: Build release APK (arm64, skip rustHook since .so prebuilt)
+        env:
+          XIANMU_SKIP_RUST: 1
         run: flutter build apk --release
+
+      - name: Dump rust-hook log on failure (diagnostics)
+        if: failure()
+        run: cat build/rust-hook.log 2>/dev/null || true
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
